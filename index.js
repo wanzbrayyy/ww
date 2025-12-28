@@ -8,12 +8,53 @@ import crypto from 'crypto';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Konfigurasi
 const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app"; 
 const JWT_SECRET_AUTH = "KUNCI_RAHASIA_ANDA_YANG_SANGAT_AMAN_DAN_PANJANG";
 const MONGO_URI = "mongodb+srv://maverickuniverse405:1m8MIgmKfK2QwBNe@cluster0.il8d4jx.mongodb.net/digi?appName=Cluster0";
 
-// Middleware
+// --- MONGODB CACHED CONNECTION (KHUSUS VERCEL) ---
+let cached = global.mongoose;
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
+async function connectToDatabase() {
+  if (cached.conn) return cached.conn;
+
+  if (!cached.promise) {
+    const opts = {
+      bufferCommands: false,
+    };
+    cached.promise = mongoose.connect(MONGO_URI, opts).then((mongoose) => {
+      return mongoose;
+    });
+  }
+  
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.promise = null;
+    throw e;
+  }
+  return cached.conn;
+}
+
+// Middleware untuk memastikan DB connect sebelum request diproses
+app.use(async (req, res, next) => {
+    // Skip DB check for proxy routes to speed up response
+    if (req.path.startsWith('/api/download') || req.path.startsWith('/api/homepage') || req.path.startsWith('/api/search') || req.path.startsWith('/api/trending')) {
+        return next();
+    }
+    
+    try {
+        await connectToDatabase();
+        next();
+    } catch (error) {
+        console.error("Database connection failed:", error);
+        res.status(500).json({ status: 'error', message: 'Database connection failed' });
+    }
+});
+
 app.use(express.json());
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
@@ -25,12 +66,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Database Connection
-mongoose.connect(MONGO_URI)
-    .then(() => console.log('MongoDB Connected'))
-    .catch(err => console.log('MongoDB Error:', err));
-
-// User Model
 const userSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
     username: { type: String, required: true, unique: true },
@@ -54,9 +89,9 @@ userSchema.methods.matchPassword = async function(p) {
     return await bcrypt.compare(p, this.password); 
 };
 
-const User = mongoose.model('User', userSchema);
+// Cek apakah model sudah ada sebelum compile (fix error overwrite di serverless)
+const User = mongoose.models.User || mongoose.model('User', userSchema);
 
-// Auth Middleware
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -75,30 +110,25 @@ const protect = async (req, res, next) => {
     }
 };
 
-// Proxy Function
 const proxyToWorkingApi = (endpoint) => async (req, res) => {
     const fullUrl = `${WORKING_API_BASE_URL}${endpoint}`;
     try {
         const response = await axios.get(fullUrl, { 
             params: req.query,
-            timeout: 15000 // 15s timeout
+            timeout: 9000 // Vercel free limit 10s, set 9s biar aman
         });
 
-        // Forward data directly to keep structure consistent
         if (response.data) {
             res.json(response.data);
         } else {
-            res.status(404).json({ status: 'error', message: 'No data received from upstream' });
+            res.status(404).json({ status: 'error', message: 'No data received' });
         }
     } catch (error) {
         const status = error.response?.status || 500;
-        const message = error.response?.data?.message || error.message || 'Failed to proxy request';
-        console.error(`Proxy Error [${endpoint}]:`, message);
+        const message = error.response?.data?.message || error.message;
         res.status(status).json({ status: 'error', message });
     }
 };
-
-// --- MOVIE ROUTES ---
 
 app.get('/api/homepage', proxyToWorkingApi('/api/homepage'));
 
@@ -113,41 +143,33 @@ app.get('/api/info/:id', (req, res) => {
     return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
 });
 
-// Legacy route support
 app.get('/api/detail/:id', (req, res) => {
     return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
 });
 
 app.get('/api/sources/:id', (req, res) => {
-    // Axios automatically forwards query params (season, episode)
     return proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res);
 });
 
 app.get('/api/download', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send("Missing url parameter");
-    
-    // Redirect to Railway backend for actual downloading/streaming
-    // This avoids Vercel timeout limits
     const railwayDownloadUrl = `${WORKING_API_BASE_URL}/api/download?url=${encodeURIComponent(targetUrl)}`;
     res.redirect(railwayDownloadUrl);
 });
-
-
-// --- AUTH ROUTES ---
 
 const generateToken = (id) => jwt.sign({ id }, JWT_SECRET_AUTH, { expiresIn: '30d' });
 
 app.post('/api/auth/register', async (req, res) => {
     const { fullName, username, email, password } = req.body;
     try {
+        await connectToDatabase(); 
         if (!fullName || !username || !email || !password) return res.status(400).json({ message: 'Please fill all fields' });
         const userExists = await User.findOne({ $or: [{email}, {username}] });
-        if (userExists) return res.status(400).json({ message: 'User with this email or username already exists' });
+        if (userExists) return res.status(400).json({ message: 'User already exists' });
         const user = await User.create({ fullName, username, email, password });
         res.status(201).json({ _id: user._id, token: generateToken(user._id) });
     } catch (error) {
-        console.error(error);
         res.status(500).json({ message: 'Server Error' });
     }
 });
@@ -155,6 +177,7 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     try {
+        await connectToDatabase();
         if (!email || !password) return res.status(400).json({ message: 'Please provide email and password' });
         const user = await User.findOne({ email });
         if (user && (await user.matchPassword(password))) {
@@ -163,7 +186,6 @@ app.post('/api/auth/login', async (req, res) => {
             res.status(401).json({ message: 'Invalid email or password' });
         }
     } catch (error) {
-        console.error(error);
         res.status(500).json({ message: 'Server Error' });
     }
 });
@@ -196,13 +218,12 @@ app.put('/api/users/profile', protect, async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Server is running properly. Connected to: ' + WORKING_API_BASE_URL);
+    res.send('Gateway Active');
 });
 
-// Use import.meta.url check for local dev, otherwise just export for Vercel
 if (process.env.NODE_ENV !== 'production') {
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running on http://0.0.0.0:${PORT}`);
+        console.log(`Server running locally on port ${PORT}`);
     });
 }
 
