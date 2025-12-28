@@ -1,0 +1,25 @@
+
+{
+  "name": "mcuid-api-server",
+  "version": "1.0.0",
+  "description": "MCUID API Server with Scraping and Authentication",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon server.js"
+  },
+  "author": "MCUID",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "axios-cookiejar-support": "^5.0.2",
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.4.1",
+    "tough-cookie": "^4.1.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.2"
+  }
+}
