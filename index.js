@@ -1,17 +1,19 @@
-const express = require('express');
-const axios = require('axios');
-const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+import express from 'express';
+import axios from 'axios';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Konfigurasi
 const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app"; 
 const JWT_SECRET_AUTH = "KUNCI_RAHASIA_ANDA_YANG_SANGAT_AMAN_DAN_PANJANG";
 const MONGO_URI = "mongodb+srv://maverickuniverse405:1m8MIgmKfK2QwBNe@cluster0.il8d4jx.mongodb.net/digi?appName=Cluster0";
 
+// Middleware
 app.use(express.json());
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
@@ -23,10 +25,12 @@ app.use((req, res, next) => {
     next();
 });
 
+// Database Connection
 mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB Connected'))
-    .catch(err => console.log(err));
+    .catch(err => console.log('MongoDB Error:', err));
 
+// User Model
 const userSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
     username: { type: String, required: true, unique: true },
@@ -52,6 +56,7 @@ userSchema.methods.matchPassword = async function(p) {
 
 const User = mongoose.model('User', userSchema);
 
+// Auth Middleware
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -70,25 +75,30 @@ const protect = async (req, res, next) => {
     }
 };
 
+// Proxy Function
 const proxyToWorkingApi = (endpoint) => async (req, res) => {
     const fullUrl = `${WORKING_API_BASE_URL}${endpoint}`;
     try {
         const response = await axios.get(fullUrl, { 
             params: req.query,
-            timeout: 15000 
+            timeout: 15000 // 15s timeout
         });
 
-        if (response.data && response.data.status === 'success') {
+        // Forward data directly to keep structure consistent
+        if (response.data) {
             res.json(response.data);
         } else {
-            res.json(response.data);
+            res.status(404).json({ status: 'error', message: 'No data received from upstream' });
         }
     } catch (error) {
         const status = error.response?.status || 500;
         const message = error.response?.data?.message || error.message || 'Failed to proxy request';
+        console.error(`Proxy Error [${endpoint}]:`, message);
         res.status(status).json({ status: 'error', message });
     }
 };
+
+// --- MOVIE ROUTES ---
 
 app.get('/api/homepage', proxyToWorkingApi('/api/homepage'));
 
@@ -103,20 +113,28 @@ app.get('/api/info/:id', (req, res) => {
     return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
 });
 
+// Legacy route support
 app.get('/api/detail/:id', (req, res) => {
     return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
 });
 
 app.get('/api/sources/:id', (req, res) => {
+    // Axios automatically forwards query params (season, episode)
     return proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res);
 });
 
 app.get('/api/download', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send("Missing url parameter");
+    
+    // Redirect to Railway backend for actual downloading/streaming
+    // This avoids Vercel timeout limits
     const railwayDownloadUrl = `${WORKING_API_BASE_URL}/api/download?url=${encodeURIComponent(targetUrl)}`;
     res.redirect(railwayDownloadUrl);
 });
+
+
+// --- AUTH ROUTES ---
 
 const generateToken = (id) => jwt.sign({ id }, JWT_SECRET_AUTH, { expiresIn: '30d' });
 
@@ -129,6 +147,7 @@ app.post('/api/auth/register', async (req, res) => {
         const user = await User.create({ fullName, username, email, password });
         res.status(201).json({ _id: user._id, token: generateToken(user._id) });
     } catch (error) {
+        console.error(error);
         res.status(500).json({ message: 'Server Error' });
     }
 });
@@ -144,6 +163,7 @@ app.post('/api/auth/login', async (req, res) => {
             res.status(401).json({ message: 'Invalid email or password' });
         }
     } catch (error) {
+        console.error(error);
         res.status(500).json({ message: 'Server Error' });
     }
 });
@@ -176,9 +196,14 @@ app.put('/api/users/profile', protect, async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Server is running properly.');
+    res.send('Server is running properly. Connected to: ' + WORKING_API_BASE_URL);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-});
+// Use import.meta.url check for local dev, otherwise just export for Vercel
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+}
+
+export default app;
