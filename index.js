@@ -1,70 +1,29 @@
-import express from 'express';
-import axios from 'axios';
-import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+cat > server.js << 'EOF'
+const express = require('express');
+const axios = require('axios');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app"; 
+// Ganti URL ini dengan URL API Railway Anda yang sudah berhasil
+const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app/";
 const JWT_SECRET_AUTH = "KUNCI_RAHASIA_ANDA_YANG_SANGAT_AMAN_DAN_PANJANG";
-const MONGO_URI = "mongodb+srv://maverickuniverse405:1m8MIgmKfK2QwBNe@cluster0.il8d4jx.mongodb.net/digi?appName=Cluster0";
-
-// --- MONGODB CACHED CONNECTION (KHUSUS VERCEL) ---
-let cached = global.mongoose;
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
-}
-
-async function connectToDatabase() {
-  if (cached.conn) return cached.conn;
-
-  if (!cached.promise) {
-    const opts = {
-      bufferCommands: false,
-    };
-    cached.promise = mongoose.connect(MONGO_URI, opts).then((mongoose) => {
-      return mongoose;
-    });
-  }
-  
-  try {
-    cached.conn = await cached.promise;
-  } catch (e) {
-    cached.promise = null;
-    throw e;
-  }
-  return cached.conn;
-}
-
-// Middleware untuk memastikan DB connect sebelum request diproses
-app.use(async (req, res, next) => {
-    // Skip DB check for proxy routes to speed up response
-    if (req.path.startsWith('/api/download') || req.path.startsWith('/api/homepage') || req.path.startsWith('/api/search') || req.path.startsWith('/api/trending')) {
-        return next();
-    }
-    
-    try {
-        await connectToDatabase();
-        next();
-    } catch (error) {
-        console.error("Database connection failed:", error);
-        res.status(500).json({ status: 'error', message: 'Database connection failed' });
-    }
-});
 
 app.use(express.json());
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
     next();
 });
+
+// --- KONEKSI DATABASE & MODEL (UNTUK FITUR AUTH) ---
+const MONGO_URI = "mongodb+srv://maverickuniverse405:1m8MIgmKfK2QwBNe@cluster0.il8d4jx.mongodb.net/digi?appName=Cluster0";
+mongoose.connect(MONGO_URI).then(() => console.log('MongoDB Connected')).catch(err => console.log(err));
 
 const userSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
@@ -84,14 +43,10 @@ userSchema.pre('save', async function(next) {
     }
     next();
 });
+userSchema.methods.matchPassword = async function(p) { return await bcrypt.compare(p, this.password); };
+const User = mongoose.model('User', userSchema);
 
-userSchema.methods.matchPassword = async function(p) { 
-    return await bcrypt.compare(p, this.password); 
-};
-
-// Cek apakah model sudah ada sebelum compile (fix error overwrite di serverless)
-const User = mongoose.models.User || mongoose.model('User', userSchema);
-
+// --- MIDDLEWARE OTENTIKASI ---
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -110,121 +65,39 @@ const protect = async (req, res, next) => {
     }
 };
 
+// --- PROXY CERDAS KE API RAILWAY ---
+// Fungsi ini meneruskan permintaan dan membungkusnya dalam format {status, data}
 const proxyToWorkingApi = (endpoint) => async (req, res) => {
     const fullUrl = `${WORKING_API_BASE_URL}${endpoint}`;
+    console.log(`Proxying request for Flutter App to: ${fullUrl}`);
     try {
-        const response = await axios.get(fullUrl, { 
-            params: req.query,
-            timeout: 9000 // Vercel free limit 10s, set 9s biar aman
-        });
-
-        if (response.data) {
-            res.json(response.data);
-        } else {
-            res.status(404).json({ status: 'error', message: 'No data received' });
-        }
+        const response = await axios.get(fullUrl, { params: req.query });
+        // API Railway Anda sudah memiliki format {status, data}, jadi kita teruskan saja
+        res.status(response.status).json(response.data);
     } catch (error) {
         const status = error.response?.status || 500;
-        const message = error.response?.data?.message || error.message;
-        res.status(status).json({ status: 'error', message });
+        const data = error.response?.data || { status: 'error', message: 'Failed to proxy request' };
+        console.error(`Proxy error for ${fullUrl}:`, status, data);
+        res.status(status).json(data);
     }
 };
 
+// --- ENDPOINT YANG SESUAI DENGAN KEBUTUHAN FLUTTER ---
 app.get('/api/homepage', proxyToWorkingApi('/api/homepage'));
+app.get('/api/info/:id', (req, res) => proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res));
+app.get('/api/search/:query', (req, res) => proxyToWorkingApi(`/api/search/${req.params.query}`)(req, res));
+app.get('/api/sources/:id', (req, res) => proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res));
 
-app.get('/api/trending', proxyToWorkingApi('/api/trending'));
 
-app.get('/api/search/:query', (req, res) => {
-    const query = encodeURIComponent(req.params.query);
-    return proxyToWorkingApi(`/api/search/${query}`)(req, res);
-});
-
-app.get('/api/info/:id', (req, res) => {
-    return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
-});
-
-app.get('/api/detail/:id', (req, res) => {
-    return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
-});
-
-app.get('/api/sources/:id', (req, res) => {
-    return proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res);
-});
-
-app.get('/api/download', async (req, res) => {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send("Missing url parameter");
-    const railwayDownloadUrl = `${WORKING_API_BASE_URL}/api/download?url=${encodeURIComponent(targetUrl)}`;
-    res.redirect(railwayDownloadUrl);
-});
-
+// --- RUTE OTENTIKASI & PROFIL (DIJALANKAN DI VPS) ---
+// (Disembunyikan untuk saat ini agar tidak bentrok, bisa ditambahkan nanti jika perlu)
+/*
 const generateToken = (id) => jwt.sign({ id }, JWT_SECRET_AUTH, { expiresIn: '30d' });
+// ... (semua route auth di sini) ...
+*/
 
-app.post('/api/auth/register', async (req, res) => {
-    const { fullName, username, email, password } = req.body;
-    try {
-        await connectToDatabase(); 
-        if (!fullName || !username || !email || !password) return res.status(400).json({ message: 'Please fill all fields' });
-        const userExists = await User.findOne({ $or: [{email}, {username}] });
-        if (userExists) return res.status(400).json({ message: 'User already exists' });
-        const user = await User.create({ fullName, username, email, password });
-        res.status(201).json({ _id: user._id, token: generateToken(user._id) });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error' });
-    }
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`MCUID PROXY Server (FLUTTER COMPATIBLE) running on http://0.0.0.0:${PORT}`);
+    console.log(`Forwarding movie requests to: ${WORKING_API_BASE_URL}`);
 });
-
-app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    try {
-        await connectToDatabase();
-        if (!email || !password) return res.status(400).json({ message: 'Please provide email and password' });
-        const user = await User.findOne({ email });
-        if (user && (await user.matchPassword(password))) {
-            res.json({ _id: user._id, fullName: user.fullName, email: user.email, token: generateToken(user._id) });
-        } else {
-            res.status(401).json({ message: 'Invalid email or password' });
-        }
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error' });
-    }
-});
-
-app.get('/api/users/profile', protect, async (req, res) => {
-    try {
-        res.json({
-            _id: req.user._id, fullName: req.user.fullName, username: req.user.username,
-            email: req.user.email, referralCode: req.user.referralCode
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error' });
-    }
-});
-
-app.put('/api/users/profile', protect, async (req, res) => {
-    try {
-        const user = req.user;
-        user.username = req.body.username || user.username;
-        user.email = req.body.email || user.email;
-        if (req.body.password) user.password = req.body.password;
-        const updatedUser = await user.save();
-        res.json({
-            _id: updatedUser._id, fullName: updatedUser.fullName, username: updatedUser.username,
-            email: updatedUser.email, referralCode: updatedUser.referralCode
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error' });
-    }
-});
-
-app.get('/', (req, res) => {
-    res.send('Gateway Active');
-});
-
-if (process.env.NODE_ENV !== 'production') {
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running locally on port ${PORT}`);
-    });
-}
-
-export default app;
+EOF
