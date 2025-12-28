@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- KONFIGURASI KRUSIAL ---
 // Ganti URL ini dengan URL API Railway Anda yang sudah berhasil
-const WORKING_API_BASE_URL = "https://api.wanzofc.site"; 
+const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app"; 
 const JWT_SECRET_AUTH = "KUNCI_RAHASIA_ANDA_YANG_SANGAT_AMAN_DAN_PANJANG";
 
 app.use(express.json());
