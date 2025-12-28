@@ -1,4 +1,3 @@
-
 const express = require('express');
 const axios = require('axios');
 const mongoose = require('mongoose');
@@ -9,22 +8,24 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- KONFIGURASI KRUSIAL ---
-// Ganti URL ini dengan URL API Railway Anda yang sudah berhasil
 const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app"; 
 const JWT_SECRET_AUTH = "KUNCI_RAHASIA_ANDA_YANG_SANGAT_AMAN_DAN_PANJANG";
+const MONGO_URI = "mongodb+srv://maverickuniverse405:1m8MIgmKfK2QwBNe@cluster0.il8d4jx.mongodb.net/digi?appName=Cluster0";
 
 app.use(express.json());
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
     next();
 });
 
-// --- KONEKSI DATABASE & MODEL (TETAP DI VPS) ---
-const MONGO_URI = "mongodb+srv://maverickuniverse405:1m8MIgmKfK2QwBNe@cluster0.il8d4jx.mongodb.net/digi?appName=Cluster0";
-mongoose.connect(MONGO_URI).then(() => console.log('MongoDB Connected')).catch(err => console.log(err));
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('MongoDB Connected'))
+    .catch(err => console.log(err));
 
 const userSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
@@ -44,10 +45,13 @@ userSchema.pre('save', async function(next) {
     }
     next();
 });
-userSchema.methods.matchPassword = async function(p) { return await bcrypt.compare(p, this.password); };
+
+userSchema.methods.matchPassword = async function(p) { 
+    return await bcrypt.compare(p, this.password); 
+};
+
 const User = mongoose.model('User', userSchema);
 
-// --- MIDDLEWARE OTENTIKASI (TETAP DI VPS) ---
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -66,34 +70,54 @@ const protect = async (req, res, next) => {
     }
 };
 
-// --- PROXY ROUTES (MENERUSKAN PERMINTAAN FILM KE RAILWAY) ---
-// Wrapper untuk meneruskan permintaan ke API Railway yang berhasil
 const proxyToWorkingApi = (endpoint) => async (req, res) => {
     const fullUrl = `${WORKING_API_BASE_URL}${endpoint}`;
-    console.log(`Proxying request to: ${fullUrl}`);
     try {
-        const response = await axios.get(fullUrl, { params: req.query });
-        // API Railway Anda memiliki format {status, data}, kita hanya butuh 'data' nya.
-        if (response.data.status === 'success') {
-            res.json(response.data.data);
+        const response = await axios.get(fullUrl, { 
+            params: req.query,
+            timeout: 15000 
+        });
+
+        if (response.data && response.data.status === 'success') {
+            res.json(response.data);
         } else {
             res.json(response.data);
         }
     } catch (error) {
         const status = error.response?.status || 500;
-        const message = error.response?.data?.message || 'Failed to proxy request';
-        console.error(`Proxy error for ${fullUrl}:`, status, message);
-        res.status(status).json({ message });
+        const message = error.response?.data?.message || error.message || 'Failed to proxy request';
+        res.status(status).json({ status: 'error', message });
     }
 };
 
-// Rute-rute film sekarang hanya meneruskan permintaan
-app.get('/api/movies/homepage', proxyToWorkingApi('/api/homepage'));
-app.get('/api/detail/:id', (req, res) => proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res));
-app.get('/api/sources/:id', (req, res) => proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res));
+app.get('/api/homepage', proxyToWorkingApi('/api/homepage'));
 
+app.get('/api/trending', proxyToWorkingApi('/api/trending'));
 
-// --- RUTE OTENTIKASI & PROFIL (DIJALANKAN DI VPS) ---
+app.get('/api/search/:query', (req, res) => {
+    const query = encodeURIComponent(req.params.query);
+    return proxyToWorkingApi(`/api/search/${query}`)(req, res);
+});
+
+app.get('/api/info/:id', (req, res) => {
+    return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
+});
+
+app.get('/api/detail/:id', (req, res) => {
+    return proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res);
+});
+
+app.get('/api/sources/:id', (req, res) => {
+    return proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res);
+});
+
+app.get('/api/download', async (req, res) => {
+    const targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).send("Missing url parameter");
+    const railwayDownloadUrl = `${WORKING_API_BASE_URL}/api/download?url=${encodeURIComponent(targetUrl)}`;
+    res.redirect(railwayDownloadUrl);
+});
+
 const generateToken = (id) => jwt.sign({ id }, JWT_SECRET_AUTH, { expiresIn: '30d' });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -151,7 +175,10 @@ app.put('/api/users/profile', protect, async (req, res) => {
     }
 });
 
+app.get('/', (req, res) => {
+    res.send('Server is running properly.');
+});
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MCUID PROXY Server running on http://0.0.0.0:${PORT}`);
-    console.log(`Forwarding movie requests to: ${WORKING_API_BASE_URL}`);
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
 });
