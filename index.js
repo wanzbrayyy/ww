@@ -1,4 +1,4 @@
-cat > server.js << 'EOF'
+
 const express = require('express');
 const axios = require('axios');
 const mongoose = require('mongoose');
@@ -155,8 +155,3 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`MCUID PROXY Server running on http://0.0.0.0:${PORT}`);
     console.log(`Forwarding movie requests to: ${WORKING_API_BASE_URL}`);
 });
-EOF```
-
-### **Langkah 2: Restart Server Anda**
-```bash
-pm2 restart mcuid-api
