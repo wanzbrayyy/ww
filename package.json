@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Gateway API for Wanzofc Film (Auth + Proxy)",
   "main": "index.js",
-  "type": "module",
   "engines": {
     "node": ">=18.x"
   },
