@@ -10,7 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Ganti URL ini dengan URL API Railway Anda yang sudah berhasil
-const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app/";
+const WORKING_API_BASE_URL = "https://mov-production-a578.up.railway.app/"; 
 const JWT_SECRET_AUTH = "KUNCI_RAHASIA_ANDA_YANG_SANGAT_AMAN_DAN_PANJANG";
 
 app.use(express.json());
@@ -66,37 +66,104 @@ const protect = async (req, res, next) => {
 };
 
 // --- PROXY CERDAS KE API RAILWAY ---
-// Fungsi ini meneruskan permintaan dan membungkusnya dalam format {status, data}
-const proxyToWorkingApi = (endpoint) => async (req, res) => {
-    const fullUrl = `${WORKING_API_BASE_URL}${endpoint}`;
-    console.log(`Proxying request for Flutter App to: ${fullUrl}`);
+// Fungsi ini meneruskan permintaan dan menangani format respons
+const proxyToWorkingApi = (endpoint, params = {}) => async (req, res) => {
+    // Ganti placeholder di endpoint dengan params dari request
+    let finalEndpoint = endpoint;
+    for (const key in req.params) {
+        finalEndpoint = finalEndpoint.replace(`:${key}`, req.params[key]);
+    }
+
+    const fullUrl = `${WORKING_API_BASE_URL}${finalEndpoint}`;
+    console.log(`Proxying request to: ${fullUrl} with query:`, req.query);
     try {
         const response = await axios.get(fullUrl, { params: req.query });
-        // API Railway Anda sudah memiliki format {status, data}, jadi kita teruskan saja
-        res.status(response.status).json(response.data);
+        // API Railway Anda memiliki format {status, data}, kita hanya butuh 'data' nya untuk kompatibilitas.
+        if (response.data && response.data.status === 'success') {
+            res.json(response.data.data);
+        } else {
+             // Jika tidak ada 'status' atau bukan 'success', kirim apa adanya
+            res.json(response.data);
+        }
     } catch (error) {
         const status = error.response?.status || 500;
-        const data = error.response?.data || { status: 'error', message: 'Failed to proxy request' };
+        const data = error.response?.data || { message: 'Failed to proxy request' };
         console.error(`Proxy error for ${fullUrl}:`, status, data);
         res.status(status).json(data);
     }
 };
 
-// --- ENDPOINT YANG SESUAI DENGAN KEBUTUHAN FLUTTER ---
-app.get('/api/homepage', proxyToWorkingApi('/api/homepage'));
-app.get('/api/info/:id', (req, res) => proxyToWorkingApi(`/api/info/${req.params.id}`)(req, res));
-app.get('/api/search/:query', (req, res) => proxyToWorkingApi(`/api/search/${req.params.query}`)(req, res));
-app.get('/api/sources/:id', (req, res) => proxyToWorkingApi(`/api/sources/${req.params.id}`)(req, res));
+
+// --- ENDPOINT YANG DITERIMA VPS (SESUAI KEBUTUHAN ANDROID/FLUTTER) ---
+// Rute-rute ini akan "diterjemahkan" ke rute API Railway
+app.get('/api/movies/homepage', proxyToWorkingApi('/api/homepage'));
+
+// Aplikasi minta /api/detail/:id, VPS akan meneruskannya ke /api/info/:id di Railway
+app.get('/api/detail/:id', proxyToWorkingApi('/api/info/:id'));
+
+// Aplikasi minta /api/sources/:id, VPS akan meneruskannya ke /api/sources/:id di Railway
+app.get('/api/sources/:id', proxyToWorkingApi('/api/sources/:id'));
 
 
 // --- RUTE OTENTIKASI & PROFIL (DIJALANKAN DI VPS) ---
-// (Disembunyikan untuk saat ini agar tidak bentrok, bisa ditambahkan nanti jika perlu)
-/*
 const generateToken = (id) => jwt.sign({ id }, JWT_SECRET_AUTH, { expiresIn: '30d' });
-// ... (semua route auth di sini) ...
-*/
+
+app.post('/api/auth/register', async (req, res) => {
+    const { fullName, username, email, password } = req.body;
+    try {
+        if (!fullName || !username || !email || !password) return res.status(400).json({ message: 'Please fill all fields' });
+        const userExists = await User.findOne({ $or: [{email}, {username}] });
+        if (userExists) return res.status(400).json({ message: 'User with this email or username already exists' });
+        const user = await User.create({ fullName, username, email, password });
+        res.status(201).json({ _id: user._id, token: generateToken(user._id) });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+    try {
+        if (!email || !password) return res.status(400).json({ message: 'Please provide email and password' });
+        const user = await User.findOne({ email });
+        if (user && (await user.matchPassword(password))) {
+            res.json({ _id: user._id, fullName: user.fullName, email: user.email, token: generateToken(user._id) });
+        } else {
+            res.status(401).json({ message: 'Invalid email or password' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+app.get('/api/users/profile', protect, async (req, res) => {
+    try {
+        res.json({
+            _id: req.user._id, fullName: req.user.fullName, username: req.user.username,
+            email: req.user.email, referralCode: req.user.referralCode
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+app.put('/api/users/profile', protect, async (req, res) => {
+    try {
+        const user = req.user;
+        user.username = req.body.username || user.username;
+        user.email = req.body.email || user.email;
+        if (req.body.password) user.password = req.body.password;
+        const updatedUser = await user.save();
+        res.json({
+            _id: updatedUser._id, fullName: updatedUser.fullName, username: updatedUser.username,
+            email: updatedUser.email, referralCode: updatedUser.referralCode
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MCUID PROXY Server (FLUTTER COMPATIBLE) running on http://0.0.0.0:${PORT}`);
+    console.log(`MCUID PROXY Server running on http://0.0.0.0:${PORT}`);
     console.log(`Forwarding movie requests to: ${WORKING_API_BASE_URL}`);
 });
